@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Be Battles - Survival Horizon</title>
     <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
         body { background: #020617; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #f8fafc; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
@@ -187,6 +190,15 @@
         <span id="hideout-timer-label">⏱ 01:00</span> &nbsp;|&nbsp; <span data-i18n="hideoutHudExit">Sair: E</span>
     </div>
 
+    <!-- TELA DE CARREGAMENTO INICIAL -->
+    <div id="boot-loading-screen" class="screen" style="justify-content:center; align-items:center;">
+        <div style="display:flex; flex-direction:column; align-items:center; gap:14px;">
+            <div style="width:42px; height:42px; border:4px solid #1e293b; border-top-color:#38bdf8; border-radius:50%; animation:spin 0.8s linear infinite;"></div>
+            <div style="color:#64748b; font-size:0.95rem; font-weight:600;">Carregando...</div>
+        </div>
+    </div>
+    <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
+
     <!-- TELA DE LOGIN / REGISTRO -->
     <div id="auth-screen" class="screen hidden" style="justify-content:center; align-items:center;">
         <div class="auth-box">
@@ -202,13 +214,13 @@
                 <button onclick="Accounts.doLogin()" style="background:linear-gradient(to right,#3b82f6,#6366f1); color:white; padding:13px; border:none; font-size:1rem; font-weight:700; border-radius:6px; cursor:pointer;">ENTRAR</button>
             </div>
             <div id="auth-form-register" class="hidden" style="display:flex; flex-direction:column; gap:10px;">
-                <input class="auth-input" id="reg-username" type="text" placeholder="Nome de usuário (3-20 chars)" maxlength="20">
-                <input class="auth-input" id="reg-password" type="password" placeholder="Senha (mínimo 4 chars)" maxlength="32">
+                <input class="auth-input" id="reg-username" type="text" placeholder="Nome de usuário (letras, números, _)" maxlength="20">
+                <input class="auth-input" id="reg-password" type="password" placeholder="Senha (mínimo 6 chars)" maxlength="32">
                 <input class="auth-input" id="reg-password2" type="password" placeholder="Confirmar senha" maxlength="32">
                 <button onclick="Accounts.doRegister()" style="background:linear-gradient(to right,#10b981,#059669); color:white; padding:13px; border:none; font-size:1rem; font-weight:700; border-radius:6px; cursor:pointer;">CRIAR CONTA</button>
             </div>
             <div id="auth-error" class="auth-error hidden"></div>
-            <div class="auth-info">💾 Contas salvas localmente neste dispositivo</div>
+            <div class="auth-info">☁️ Sua conta funciona em qualquer dispositivo</div>
         </div>
     </div>
 
@@ -1089,11 +1101,34 @@
     // ═══════════════════════════════════════════════════════════
     // SISTEMA DE CONTAS (localStorage por dispositivo)
     // ═══════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════
+    // FIREBASE — contas na nuvem (funciona em qualquer dispositivo)
+    // ═══════════════════════════════════════════════════════════
+    const firebaseConfig = {
+        apiKey: "AIzaSyDkCzWIKdiBCE32GaZtcWjP_lkyDMbEhDM",
+        authDomain: "bebattles-f3370.firebaseapp.com",
+        databaseURL: "https://bebattles-f3370-default-rtdb.firebaseio.com",
+        projectId: "bebattles-f3370",
+        storageBucket: "bebattles-f3370.firebasestorage.app",
+        messagingSenderId: "248851094130",
+        appId: "1:248851094130:web:3f8d944821f4ca127f40eb"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const fbAuth = firebase.auth();
+    const fbDb = firebase.firestore();
+
     const Accounts = {
         current: null,
-        _hash(s) { let h=0; for(let i=0;i<s.length;i++) h=Math.imul(31,h)+s.charCodeAt(i)|0; return (h>>>0).toString(16); },
-        _list() { try{return JSON.parse(localStorage.getItem('bb-v2-accounts')||'[]');}catch(e){return[];} },
-        _save(l) { try{localStorage.setItem('bb-v2-accounts',JSON.stringify(l));}catch(e){} },
+        _busy: false,
+        _emailFor(n) { return n.toLowerCase() + '@bebattles.app'; },
+        _validUsername(n) { return /^[a-zA-Z0-9_]{3,20}$/.test(n); },
+        _defaultProfile(name) {
+            return {
+                name: name, wallet: 100,
+                upg: { maxHp:100, baseSpd:4.8, weaponKey:'default', weaponSpd:13, weaponDmg:1.0, atkCd:16, potion:0, shield:0 },
+                ranking: [], lang: 'pt-BR', vol: 0.7, sfx: true, mus: true
+            };
+        },
         showTab(tab) {
             document.getElementById('auth-form-login').classList.toggle('hidden', tab!=='login');
             document.getElementById('auth-form-register').classList.toggle('hidden', tab!=='register');
@@ -1105,55 +1140,93 @@
             let e=document.getElementById('auth-error');
             e.textContent=msg; e.classList.toggle('hidden',!msg);
         },
-        doLogin() {
+        _setBusy(b) {
+            this._busy=b;
+            document.querySelectorAll('#auth-form-login button, #auth-form-register button').forEach(btn=>btn.disabled=b);
+        },
+        _friendlyError(err) {
+            const map = {
+                'auth/email-already-in-use': 'Este nome de usuário já está em uso.',
+                'auth/invalid-email': 'Nome de usuário inválido (use letras, números e _).',
+                'auth/weak-password': 'Senha muito fraca (mínimo 6 caracteres).',
+                'auth/user-not-found': 'Nome ou senha incorretos.',
+                'auth/wrong-password': 'Nome ou senha incorretos.',
+                'auth/invalid-credential': 'Nome ou senha incorretos.',
+                'auth/invalid-login-credentials': 'Nome ou senha incorretos.',
+                'auth/too-many-requests': 'Muitas tentativas. Aguarde um pouco e tente de novo.',
+                'auth/network-request-failed': 'Sem conexão com a internet. Verifique sua rede.'
+            };
+            return map[err.code] || ('Erro: ' + (err.message || err.code || 'desconhecido'));
+        },
+        async doLogin() {
+            if(this._busy) return;
             let n=(document.getElementById('auth-username').value||'').trim();
             let p=document.getElementById('auth-password').value||'';
             if(!n||!p){this._err('Preencha todos os campos.');return;}
-            let l=this._list();
-            let a=l.find(x=>x.name.toLowerCase()===n.toLowerCase()&&x.ph===this._hash(p));
-            if(!a){this._err('Nome ou senha incorretos.');return;}
-            this._login(a);
+            this._err(''); this._setBusy(true);
+            try {
+                await fbAuth.signInWithEmailAndPassword(this._emailFor(n), p);
+                // onAuthStateChanged cuida do resto (carrega perfil e entra no menu)
+            } catch(err) {
+                this._err(this._friendlyError(err));
+                this._setBusy(false);
+            }
         },
-        doRegister() {
+        async doRegister() {
+            if(this._busy) return;
             let n=(document.getElementById('reg-username').value||'').trim();
             let p=document.getElementById('reg-password').value||'';
             let p2=document.getElementById('reg-password2').value||'';
             if(!n||!p||!p2){this._err('Preencha todos os campos.');return;}
-            if(n.length<3){this._err('Nome deve ter ao menos 3 caracteres.');return;}
-            if(p.length<4){this._err('Senha deve ter ao menos 4 caracteres.');return;}
+            if(!this._validUsername(n)){this._err('Nome deve ter 3-20 caracteres: letras, números ou _.');return;}
+            if(p.length<6){this._err('Senha deve ter ao menos 6 caracteres.');return;}
             if(p!==p2){this._err('As senhas não coincidem.');return;}
-            let l=this._list();
-            if(l.find(x=>x.name.toLowerCase()===n.toLowerCase())){this._err('Este nome já está em uso.');return;}
-            let a={
-                id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),
-                name:n, ph:this._hash(p), wallet:100,
-                upg:{maxHp:100,baseSpd:4.8,weaponKey:'default',weaponSpd:13,weaponDmg:1.0,atkCd:16,potion:0,shield:0},
-                ranking:[], lang:'pt-BR', vol:0.7, sfx:true, mus:true
-            };
-            l.push(a); this._save(l); this._login(a);
+            this._err(''); this._setBusy(true);
+            try {
+                let cred = await fbAuth.createUserWithEmailAndPassword(this._emailFor(n), p);
+                let profile = this._defaultProfile(n);
+                await fbDb.collection('players').doc(cred.user.uid).set(profile);
+                // onAuthStateChanged cuida do resto
+            } catch(err) {
+                this._err(this._friendlyError(err));
+                this._setBusy(false);
+            }
         },
-        _login(a) {
-            this.current=a;
-            try{localStorage.setItem('bb-v2-session',a.id);}catch(e){}
-            Engine.bootWithAccount(a);
-        },
-        tryAutoLogin() {
-            try{
-                let sid=localStorage.getItem('bb-v2-session');
-                if(sid){ let l=this._list(), a=l.find(x=>x.id===sid); if(a){this.current=a;Engine.bootWithAccount(a);return true;} }
-            }catch(e){}
-            return false;
+        init() {
+            fbAuth.onAuthStateChanged(async (user) => {
+                document.getElementById('boot-loading-screen').classList.add('hidden');
+                if(user) {
+                    try {
+                        let doc = await fbDb.collection('players').doc(user.uid).get();
+                        let data = doc.exists ? doc.data() : this._defaultProfile(user.email.split('@')[0]);
+                        if(!doc.exists) await fbDb.collection('players').doc(user.uid).set(data);
+                        this.current = { uid: user.uid, ...data };
+                        document.getElementById('auth-screen').classList.add('hidden');
+                        this._setBusy(false);
+                        Engine.bootWithAccount(this.current);
+                    } catch(err) {
+                        this._err('Erro ao carregar perfil: ' + (err.message||err.code));
+                        document.getElementById('auth-screen').classList.remove('hidden');
+                        this._setBusy(false);
+                    }
+                } else {
+                    this.current = null;
+                    document.getElementById('auth-screen').classList.remove('hidden');
+                }
+            });
         },
         saveProgress() {
             if(!this.current) return;
-            let l=this._list(), i=l.findIndex(x=>x.id===this.current.id);
-            if(i===-1) return;
-            l[i].wallet=Engine.walletP1; l[i].upg={...Engine.persistentUpgradesP1};
-            l[i].ranking=Engine.ranking; l[i].lang=Settings.language;
-            l[i].vol=Settings.volume; l[i].sfx=Settings.sfxEnabled; l[i].mus=Settings.musicEnabled;
-            this.current=l[i]; this._save(l);
+            let data = {
+                name: this.current.name, wallet: Engine.walletP1,
+                upg: {...Engine.persistentUpgradesP1}, ranking: Engine.ranking,
+                lang: Settings.language, vol: Settings.volume,
+                sfx: Settings.sfxEnabled, mus: Settings.musicEnabled
+            };
+            Object.assign(this.current, data);
+            fbDb.collection('players').doc(this.current.uid).set(data, {merge:true}).catch(e=>console.warn('Falha ao salvar na nuvem:',e));
         },
-        logout() { this.current=null; try{localStorage.removeItem('bb-v2-session');}catch(e){} }
+        logout() { let was=this.current; this.current=null; fbAuth.signOut().catch(e=>console.warn(e)); }
     };
 
     // ═══════════════════════════════════════════════════════════
@@ -1425,9 +1498,7 @@
             this.applyLanguage();
             this.device = 'pc';
             this.applyDeviceUI();
-            if(!Accounts.tryAutoLogin()) {
-                document.getElementById('auth-screen').classList.remove('hidden');
-            }
+            Accounts.init();
             requestAnimationFrame(t => this.loop(t));
         },
 
@@ -1461,9 +1532,7 @@
         },
 
         async loadProfileAndBoot() {
-            // Substituído pelo sistema de contas — ver Accounts.tryAutoLogin()
-            if(!Accounts.tryAutoLogin())
-                document.getElementById('auth-screen').classList.remove('hidden');
+            // Obsoleto — Accounts.init() (Firebase onAuthStateChanged) cuida disso agora
         },
 
         bootWithAccount(acc) {
