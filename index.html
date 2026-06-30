@@ -119,7 +119,7 @@
         .auth-info { color:#475569; font-size:0.77rem; text-align:center; }
         .lobby-code-box { background:#1e293b; border:2px dashed #38bdf8; border-radius:8px; padding:16px; text-align:center; cursor:pointer; transition:background 0.2s; }
         .lobby-code-box:hover { background:#263352; }
-        .lobby-code { font-size:2rem; font-weight:900; color:#38bdf8; letter-spacing:6px; font-family:monospace; }
+        .lobby-code { font-size:1.05rem; font-weight:800; color:#38bdf8; letter-spacing:0.5px; font-family:monospace; word-break:break-all; line-height:1.4; }
         .lobby-status { text-align:center; font-size:0.87rem; color:#94a3b8; padding:3px 0; }
         .lobby-status.ok { color:#22c55e; } .lobby-status.err { color:#ef4444; }
         .lobby-divider { display:flex; align-items:center; gap:10px; color:#475569; font-size:0.8rem; }
@@ -378,7 +378,7 @@
             </div>
             <div class="lobby-divider">ou entre em uma sala existente</div>
             <div style="display:flex; gap:8px;">
-                <input class="auth-input" id="join-code-input" type="text" placeholder="Cole o código da sala aqui..." maxlength="30" oninput="this.value=this.value.toUpperCase()" style="flex:1; letter-spacing:2px;">
+                <input class="auth-input" id="join-code-input" type="text" placeholder="Cole o código da sala aqui..." maxlength="40" style="flex:1; letter-spacing:1px; font-size:0.85rem;">
                 <button onclick="OnlineSync.joinRoom()" id="btn-join-room" style="padding:10px 16px; background:#3b82f6; color:white; border:none; border-radius:6px; font-weight:700; white-space:nowrap; cursor:pointer;">ENTRAR</button>
             </div>
             <div id="lobby-join-status" class="lobby-status hidden"></div>
@@ -1171,50 +1171,70 @@
             document.getElementById('lobby-room-display').classList.remove('hidden');
             document.getElementById('btn-create-room').disabled=true;
             document.getElementById('btn-join-room').disabled=true;
-            let attempt=()=>{
-                let code=Math.random().toString(36).substring(2,6).toUpperCase()+
-                         Math.random().toString(36).substring(2,6).toUpperCase();
-                this.roomCode=code;
-                this.peer=new Peer('bb-'+code);
-                this.peer.on('open',()=>{
-                    let el=document.getElementById('room-code-text');
-                    el.textContent=code; el.dataset.code=code;
-                    this._st('⏳ Aguardando amigo entrar na sala...','');
-                });
-                this.peer.on('connection',conn=>{
-                    if(this.conn){conn.close();return;}
-                    this.conn=conn; this.isHost=true;
-                    this._st('✅ Amigo conectado! Iniciando...','ok');
-                    this._setup();
-                });
-                this.peer.on('error',err=>{
-                    if(err.type==='unavailable-id'){this.peer.destroy();attempt();return;}
-                    this._err('Erro ao criar sala: '+err.type+'. Tente novamente.');
-                    document.getElementById('btn-create-room').disabled=false;
-                    document.getElementById('btn-join-room').disabled=false;
-                    document.getElementById('lobby-room-display').classList.add('hidden');
-                });
-            };
-            attempt();
+            this.isHost=true;
+            // Deixa o PeerJS gerar o ID automaticamente — evita erros de ID customizado
+            this.peer=new Peer({
+                config:{iceServers:[
+                    {urls:'stun:stun.l.google.com:19302'},
+                    {urls:'stun:stun1.l.google.com:19302'}
+                ]}
+            });
+            this.peer.on('open',(id)=>{
+                this.roomCode=id;
+                let el=document.getElementById('room-code-text');
+                el.textContent=id; el.dataset.code=id;
+                this._st('⏳ Aguardando amigo entrar na sala...','');
+            });
+            this.peer.on('connection',conn=>{
+                if(this.conn){conn.close();return;}
+                this.conn=conn;
+                this._st('✅ Amigo conectado! Iniciando...','ok');
+                this._setup();
+            });
+            this.peer.on('error',err=>{
+                let msgs={
+                    'network':'Sem conexão com a internet.',
+                    'server-error':'Servidor PeerJS indisponível. Tente novamente em alguns segundos.',
+                    'socket-error':'Erro de rede. Verifique sua conexão.',
+                    'socket-closed':'Conexão com servidor encerrada. Tente novamente.'
+                };
+                this._err(msgs[err.type]||'Erro: '+err.type+'. Tente novamente.');
+                document.getElementById('btn-create-room').disabled=false;
+                document.getElementById('btn-join-room').disabled=false;
+                document.getElementById('lobby-room-display').classList.add('hidden');
+                this.peer=null;
+            });
         },
 
         joinRoom() {
-            let code=(document.getElementById('join-code-input').value||'').trim().toUpperCase();
-            if(code.length<4){this._err('Código inválido.');return;}
+            let code=(document.getElementById('join-code-input').value||'').trim();
+            if(code.length<6){this._err('Cole o código completo da sala.');return;}
             this._err(''); this._jst('🔌 Conectando...','');
             document.getElementById('btn-create-room').disabled=true;
             document.getElementById('btn-join-room').disabled=true;
             this.isHost=false;
-            this.peer=new Peer();
+            this.peer=new Peer({
+                config:{iceServers:[
+                    {urls:'stun:stun.l.google.com:19302'},
+                    {urls:'stun:stun1.l.google.com:19302'}
+                ]}
+            });
             this.peer.on('open',()=>{
-                this.conn=this.peer.connect('bb-'+code,{reliable:true});
+                // Conecta direto ao ID do host (sem prefixo)
+                this.conn=this.peer.connect(code,{reliable:true});
                 this._setup();
             });
             this.peer.on('error',err=>{
-                this._err('Erro ao conectar: '+err.type);
+                let msgs={
+                    'peer-unavailable':'Sala não encontrada. Verifique o código e tente de novo.',
+                    'network':'Sem conexão com a internet.',
+                    'server-error':'Servidor indisponível. Tente em alguns segundos.'
+                };
+                this._err(msgs[err.type]||'Erro: '+err.type);
                 this._jst('','');
                 document.getElementById('btn-create-room').disabled=false;
                 document.getElementById('btn-join-room').disabled=false;
+                this.peer=null;
             });
         },
 
@@ -1223,9 +1243,9 @@
                      document.getElementById('room-code-text').textContent;
             if(navigator.clipboard){
                 navigator.clipboard.writeText(code)
-                    .then(()=>{this._st('✅ Código copiado!','ok');setTimeout(()=>this._st('⏳ Aguardando amigo...',''),2000);})
-                    .catch(()=>prompt('Copie o código da sala:',code));
-            } else { prompt('Copie o código da sala:',code); }
+                    .then(()=>{this._st('✅ Código copiado! Manda pro amigo.','ok');setTimeout(()=>this._st('⏳ Aguardando amigo...',''),3000);})
+                    .catch(()=>prompt('Copie o código completo da sala:',code));
+            } else { prompt('Copie o código completo da sala:',code); }
         },
 
         _setup() {
